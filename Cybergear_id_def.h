@@ -1,0 +1,32 @@
+#define CTRL_MODE	0x01
+#define MOTOR_CTRL	0x12
+#define CURRENT_MODE	0x03
+#define SPEED_MODE	0x02
+#define POSSITION_MODE	0x01
+#define MOTOR_ENABLE	0x03
+#define MOTOR_DISABLE	0x04
+#define ZERO_SET	0x06
+#define MOTOR_ID_CHANGE	0x07
+#define READ_PARAMS	0x11
+#define WRITE_PARAMS	0x12
+#define FEEDBACK	0x15
+
+#define RUN_MODE		0x7005
+#define IQ_REF			0x7006
+#define SPD_REF			0x700A
+#define IMIT_TORQUE		0x700B
+#define CUR_KP			0x7010
+#define CUR_KI			0x7011
+#define CUR_FILT_GAIN		0x7014
+#define SET_POS_REF		0x7016
+#define SET_LIMIT_SPEED		0x7017
+#define SET_LIMIT_CURRENT	0x7018
+#define GET_MECHPOS		0x7019
+#define GET_IQF			0x701A
+#define GET_MECHVEL		0x701B
+#define GET_VBUS		0x701C
+#define GET_ROTATION		0x701D
+#define SET_POS_KP		0x701E
+#define SET_SPD_KP		0x701F
+#define SET_SPD_KI		0x7020
+
