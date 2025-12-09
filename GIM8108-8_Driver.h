@@ -1,5 +1,5 @@
-#ifndef CYBERGEAR_DRIVER_H
-#define CYBERGEAR_DRIVER_H
+#ifndef GIM81088_DRIVER_H
+#define GIM81088_DRIVER_H
 
 #include <iostream>
 #include <cstring>
@@ -11,18 +11,18 @@
 #include <net/if.h>
 #include <sys/ioctl.h>
 
-#include "Cybergear_id_def.h"
+#include "GIM8108-8_id_def.h"
 
-class CybergearDriver
+class GIM81088Driver
 {
 public:
-	const char* CYBERGEAR_CAN_IFACE      = "can0";
-	uint32_t  CYBERGEAR_RUN_MODE = 0;
-	uint32_t  CYBERGEAR_ID_ENABLE = 3;
+	const char* CAN_IFACE      = "can0";
+	uint32_t  ID_RUN_MODE = 0;
+	uint32_t  ID_ENABLE = 0;
 	int sock = 0;
 public:
-	CybergearDriver( const char*, uint32_t, uint32_t );
-	~CybergearDriver( void );
+	GIM81088Driver( const char*, uint32_t, uint32_t );
+	~GIM81088Driver( void );
 	int init_can( const char* ifname );
 	void close_can( void );
 	bool send_frame( uint32_t, const uint8_t* );
@@ -35,7 +35,7 @@ public:
 	bool set_mech_zero( void );
 	bool set_limit_speed( uint16_t );
 	bool set_run_mode( uint8_t );
-	bool set_locref( uint16_t );
+	bool set_motion( uint16_t );
 };
 
-#endif // CYBERGEAR_DRIVER_H
+#endif // GIM81088_DRIVER_H

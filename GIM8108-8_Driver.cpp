@@ -1,18 +1,18 @@
-#include "Cybergear_id_def.h"
-#include "Cybergear_Driver.h"
+#include "GIM8108-8_id_def.h"
+#include "GIM8108-8_Driver.h"
 
-CybergearDriver::CybergearDriver( const char* can, uint32_t id_run, uint32_t id_enable )
+GIM81088Driver::GIM81088Driver( const char* can, uint32_t id_run, uint32_t id_enable )
 {
-	this->CYBERGEAR_CAN_IFACE = can;
-	this->CYBERGEAR_ID_RUN_MODE = id_run;
-	this->CYBERGEAR_ID_ENABLE = id_enable;
+	this->CAN_IFACE = can;
+	this->ID_RUN_MODE = id_run;
+	this->ID_ENABLE = id_enable;
 }
 
-CybergearDriver::~CybergearDriver( void )
+GIM81088Driver::~GIM81088Driver( void )
 {}
 
 // initialize can interface
-int CybergearDriver::init_can(const char* ifname) {
+int GIM81088Driver::init_can(const char* ifname) {
     int s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
     if (s < 0) {
         perror("socket");
@@ -37,11 +37,11 @@ int CybergearDriver::init_can(const char* ifname) {
 }
 
 // close can interface
-void CybergearDriver::close_can( void ) {
+void GIM81088Driver::close_can( void ) {
     close(this->sock);
 }
 
-bool CybergearDriver::send_frame( uint32_t id, const uint8_t data[8] ) {
+bool GIM81088Driver::send_frame( uint32_t id, const uint8_t data[8] ) {
     struct can_frame frame{};
     frame.can_id  = id | CAN_EFF_FLAG;  // exp_ID flag
     frame.can_dlc = 8;
@@ -54,51 +54,37 @@ bool CybergearDriver::send_frame( uint32_t id, const uint8_t data[8] ) {
     return true;
 }
 
-bool CybergearDriver::set_run_mode( uint8_t mode ) {
-    uint8_t data[8] = {
-    	(CYBERGEAR_RUN_MODE & 0xFF),
-    	((CYBERGEAR_RUN_MODE >> 8) & 0xFF),
-    	0x00,
-    	mode,
-    	0,
-    	0,
-    	0,
-    	0
-    };
+bool GIM81088Driver::set_run_mode( uint8_t mode ) {
+    uint8_t data[8] = { 0x00, 0x70, 0x00, mode, 0,0,0,0 };
     std::cout << "[run_mode=" << int(mode) << "] transmmited\n";
-    return send_frame(CYBERGEAR_ID_RUN_MODE, data);
+    return send_frame(ID_RUN_MODE, data);
 }
 
-bool CybergearDriver::enable_motor( void ) {
+bool GIM81088Driver::enable_motor( void ) {
     uint8_t data[8] = {0};
     std::cout << "[Enable] transmmited\n";
-    return send_frame(CYBERGEAR_ID_ENABLE, data);
+    return send_frame(ID_ENABLE, data);
 }
 
-bool CybergearDriver::set_limit_speed( uint16_t raw_spd ) {
+bool GIM81088Driver::set_limit_speed( uint16_t raw_spd ) {
     uint8_t data[8] = {
-        (CYBERGEAR_SET_LIMIT_SPEED & 0xFF),
-        ((CYBERGEAR_SET_LIMIT_SPEED >> 8) & 0xFF),
+        0x17, 0x70,
         0x00,
-        uint8_t(raw_spd & 0xFF),
-        uint8_t((raw_spd >> 8) & 0xFF),
-        0,
-        0,
-        0
+        uint8_t(raw_spd & 0xFF), uint8_t((raw_spd >> 8) & 0xFF),
+        0,0,0
     };
     std::cout << "[limit_spd=" << raw_spd << "] transmmited\n";
-    return send_frame(CYBERGEAR_ID_RUN_MODE, data);
+    return send_frame(ID_RUN_MODE, data);
 }
 
-bool CybergearDriver::set_locref( uint16_t raw_pos ) {
+bool GIM81088Driver::set_motion( uint16_t raw_pos ) {
     uint8_t data[8] = {
-        (CYBERGEAR_SET_LOC_REF & 0xFF),
-        ((CYBERGEAR_SET_LOC_REF >> 8) & 0xFF),
+        0x16, 0x70,
         0x00,
         uint8_t(raw_pos & 0xFF), uint8_t((raw_pos >> 8) & 0xFF),
         0,0,0
     };
     std::cout << "[loc_ref=" << raw_pos << "] transmmited\n";
-    return send_frame(CYBERGEAR_ID_RUN_MODE, data);
+    return send_frame(ID_RUN_MODE, data);
 }
 
