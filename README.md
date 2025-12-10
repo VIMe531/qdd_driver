@@ -1,1 +1,3 @@
 # qdd_driver
+複数種類のQDDモータを動かすためのコード群．
+SteadyWin製GIM8108-8モータとXiaomi製Cybergearに対応中，ROBSTRIDEやmyActuatorなど他のモータにも対応させたい
