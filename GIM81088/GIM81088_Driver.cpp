@@ -1,374 +1,470 @@
-#include "GIM81088_id_def.h"
 #include "GIM81088_Driver.h"
-#include <sys/select.h>
 
-#define P_MIN  -12.5f
-#define P_MAX   12.5f
-#define V_MIN  -30.0f
-#define V_MAX   30.0f
-#define KP_MIN   0.0f
-#define KP_MAX 500.0f
-#define KD_MIN   0.0f
-#define KD_MAX   5.0f
-#define T_MIN  -12.0f
-#define T_MAX   12.0f
+#include <iostream>
+#include <cmath>
+#include <algorithm>
 
-// float → 16bit unsigned
-static int float_to_uint(float x, float x_min, float x_max, int bits)
-{
-	float span   = x_max - x_min;
-	float offset = x_min;
-	
-	if (x > x_max) x = x_max;
-	else if (x < x_min) x = x_min;
-	
-	return (int)((x - offset) * ((float)((1 << bits) - 1)) / span);
+
+// C++11 compatible clamp (std::clamp is C++17)
+template <typename T>
+static inline T clamp_cxx11(T v, T lo, T hi) {
+  return (v < lo) ? lo : (v > hi) ? hi : v;
 }
 
-// 16bit unsigned → float
-static float uint_to_float(uint16_t x, float x_min, float x_max, int bits)
-{
-	float span   = x_max - x_min;
-	float offset = x_min;
-	return (float)x * span / (float)((1 << bits) - 1) + offset;
-}
+// MIT Control ranges per manual rev1.4
+static constexpr float MIT_POS_MIN = -12.5f;
+static constexpr float MIT_POS_MAX =  12.5f;
+static constexpr float MIT_VEL_MIN = -65.0f;
+static constexpr float MIT_VEL_MAX =  65.0f;
+static constexpr float MIT_KP_MIN  =   0.0f;
+static constexpr float MIT_KP_MAX  = 500.0f;
+static constexpr float MIT_KD_MIN  =   0.0f;
+static constexpr float MIT_KD_MAX  =   5.0f;
+static constexpr float MIT_T_MIN   = -50.0f;
+static constexpr float MIT_T_MAX   =  50.0f;
 
-// 拡張CAN ID 組み立て
-uint32_t GIM81088Driver::build_can_id(uint8_t type) const
+GIM81088Driver::GIM81088Driver(std::string can_iface, uint8_t node_id)
+: can_iface_(std::move(can_iface)), node_id_(node_id)
 {
-	uint32_t id = 0;
-	id |= ((uint32_t)type		& 0x1F) << 24;	// Bit28-24: 通信タイプ
-	id |= ((uint32_t)master_id_	& 0xFFFF) << 8;	// Bit23-8 : master_id
-	id |= (uint32_t)(motor_id_	& 0xFF);		// Bit7-0  : motor_id
-	return id;
 }
-
-GIM81088Driver::GIM81088Driver(const char* can_iface, uint8_t motor_id, uint16_t master_id)
-	:	can_iface_(can_iface),
-		sock_(-1),
-		motor_id_(motor_id),
-		master_id_(master_id)
-{}
 
 GIM81088Driver::~GIM81088Driver()
 {
-	if (sock_ >= 0) {
-		close_can();
-	}
+  close_can();
+}
+
+
+bool GIM81088Driver::get_last_heartbeat(GIM81088Heartbeat& out) const
+{
+  if (!hb_valid_) return false;
+  out = hb_;
+  return true;
+}
+
+bool GIM81088Driver::get_last_encoder_estimates(GIM81088EncoderEstimates& out) const
+{
+  if (!enc_valid_) return false;
+  out = enc_;
+  return true;
+}
+
+bool GIM81088Driver::get_last_iq(GIM81088Iq& out) const
+{
+  if (!iq_valid_) return false;
+  out = iq_;
+  return true;
+}
+
+bool GIM81088Driver::get_last_bus(GIM81088Bus& out) const
+{
+  if (!bus_valid_) return false;
+  out = bus_;
+  return true;
+}
+
+bool GIM81088Driver::get_last_mit_feedback(GIM81088MitFeedback& out) const
+{
+  if (!mit_fb_valid_) return false;
+  out = mit_fb_;
+  return true;
 }
 
 int GIM81088Driver::init_can(const char* ifname)
 {
-	const char* iface = ifname ? ifname : can_iface_;
-	
-	int s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-	if (s < 0) {
-		perror("socket");
-		return -1;
-	}
-	
-	struct ifreq ifr{};
-	std::strncpy(ifr.ifr_name, iface, IFNAMSIZ);
-	ifr.ifr_name[IFNAMSIZ - 1] = '\0';
-	
-	if (ioctl(s, SIOCGIFINDEX, &ifr) < 0) {
-		perror("ioctl");
-		close(s);
-		return -1;
-	}
-	
-	struct sockaddr_can addr{};
-	addr.can_family  = AF_CAN;
-	addr.can_ifindex = ifr.ifr_ifindex;
-	
-	if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-		perror("bind");
-		close(s);
-		return -1;
-	}
-	
-	sock_ = s;
-	return s;
+  const char* iface = ifname ? ifname : can_iface_.c_str();
+
+  int s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+  if (s < 0) {
+    perror("socket");
+    return -1;
+  }
+
+  struct ifreq ifr{};
+  std::strncpy(ifr.ifr_name, iface, IFNAMSIZ);
+  ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+
+  if (ioctl(s, SIOCGIFINDEX, &ifr) < 0) {
+    perror("ioctl");
+    close(s);
+    return -1;
+  }
+
+  struct sockaddr_can addr{};
+  addr.can_family  = AF_CAN;
+  addr.can_ifindex = ifr.ifr_ifindex;
+
+  if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    perror("bind");
+    close(s);
+    return -1;
+  }
+
+  // Only 11-bit standard frames
+  // (CAN_RAW_FILTER could be set here if desired.)
+
+  sock_ = s;
+  return sock_;
 }
 
 void GIM81088Driver::close_can()
 {
-	if (sock_ >= 0) {
-		close(sock_);
-		sock_ = -1;
-	}
+  if (sock_ >= 0) {
+    close(sock_);
+    sock_ = -1;
+  }
 }
 
-bool GIM81088Driver::send_frame(uint32_t id, const uint8_t data[8])
+bool GIM81088Driver::send_frame(uint16_t can_id11, const uint8_t data[8])
 {
-	if (sock_ < 0) {
-		std::cerr << "CAN socket not initialized\n";
-		return false;
-	}
-	
-	struct can_frame frame{};
-	frame.can_id  = id | CAN_EFF_FLAG; // 拡張ID
-	frame.can_dlc = 8;
-	std::memcpy(frame.data, data, 8);
-	
-	if (write(sock_, &frame, sizeof(frame)) != sizeof(frame)) {
-		perror("write");
-		return false;
-	}
-	
-	// 必要に応じて少し待つ
-	usleep(1000); // 1ms
-	return true;
+  if (sock_ < 0) {
+    std::cerr << "CAN socket not initialized\n";
+    return false;
+  }
+
+  struct can_frame f{};
+  f.can_id  = (can_id11 & CAN_SFF_MASK);  // standard 11-bit
+  f.can_dlc = 8;
+  std::memcpy(f.data, data, 8);
+
+  if (write(sock_, &f, sizeof(f)) != (ssize_t)sizeof(f)) {
+    perror("write");
+    return false;
+  }
+  usleep(1000);
+  return true;
 }
 
-bool GIM81088Driver::recv_feedback(GIM8108Feedback &out, int timeout_ms)
+bool GIM81088Driver::recv_frame(struct can_frame& out_frame, int timeout_ms)
 {
-	if (sock_ < 0) {
-		std::cerr << "CAN socket not initialized\n";
-		return false;
-	}
-	
-	fd_set readfds;
-	FD_ZERO(&readfds);
-	FD_SET(sock_, &readfds);
-	
-	struct timeval tv;
-	struct timeval* ptv = nullptr;
-	if (timeout_ms >= 0) {
-		tv.tv_sec  = timeout_ms / 1000;
-		tv.tv_usec = (timeout_ms % 1000) * 1000;
-		ptv = &tv;
-	}
-	
-	int ret = select(sock_ + 1, &readfds, nullptr, nullptr, ptv);
-	if (ret < 0) {
-		perror("select");
-		return false;
-	} else if (ret == 0) {
-		// timeout
-		return false;
-	}
-	
-	struct can_frame frame{};
-	ssize_t n = read(sock_, &frame, sizeof(frame));
-	if (n != sizeof(frame)) {
-		perror("read");
-		return false;
-	}
-	
-	if (!(frame.can_id & CAN_EFF_FLAG)) {
-		// 標準IDは無視
-		return false;
-	}
-	
-	uint32_t eff_id = frame.can_id & CAN_EFF_MASK;
-	
-	// 通信タイプ抽出
-	uint8_t type = (eff_id >> 24) & 0x1F;
-	if (type != GIM81088_FEEDBACK) {
-		return false;
-	}
-	
-	// 上位16bit（Bit23-8）を仮にヘッダとして解釈
-	uint16_t header = (eff_id >> 8) & 0xFFFF;
-	uint8_t motor_id_in_frame	= header & 0xFF;
-	uint8_t fault_bits			= (header >> 8) & 0x3F;
-	uint8_t mode_state			= (header >> 14) & 0x03;
-	
-	if (motor_id_in_frame != motor_id_) {
-		return false;
-	}
-	
-	uint16_t raw_pos	= (uint16_t(frame.data[0]) << 8) | frame.data[1];
-	uint16_t raw_vel	= (uint16_t(frame.data[2]) << 8) | frame.data[3];
-	uint16_t raw_torque	= (uint16_t(frame.data[4]) << 8) | frame.data[5];
-	int16_t  raw_temp	= (int16_t)((uint16_t(frame.data[6]) << 8) | frame.data[7]);
-	
-	float pos	= uint_to_float(raw_pos, P_MIN, P_MAX, 16);
-	float vel	= uint_to_float(raw_vel, V_MIN, V_MAX, 16);
-	float tq	= uint_to_float(raw_torque,T_MIN, T_MAX, 16);
-	float temp	= raw_temp / 10.0f;
-	
-	out.motor_id			= motor_id_in_frame;
-	out.mode_state			= mode_state;
-	out.fault_bits			= fault_bits;
-	out.position_rad		= pos;
-	out.velocity_rad_s		= vel;
-	out.torque_Nm			= tq;
-	out.temperature_degC	= temp;
-	
-	return true;
+  if (sock_ < 0) return false;
+
+  fd_set rfds;
+  FD_ZERO(&rfds);
+  FD_SET(sock_, &rfds);
+
+  struct timeval tv{};
+  tv.tv_sec  = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+  int ret = select(sock_ + 1, &rfds, nullptr, nullptr, (timeout_ms >= 0) ? &tv : nullptr);
+  if (ret < 0) {
+    perror("select");
+    return false;
+  } else if (ret == 0) {
+    return false; // timeout
+  }
+
+  struct can_frame f{};
+  ssize_t n = read(sock_, &f, sizeof(f));
+  if (n != (ssize_t)sizeof(f)) {
+    perror("read");
+    return false;
+  }
+  out_frame = f;
+  return true;
 }
 
-// ===== 汎用パラメータアクセス =====
-
-bool GIM81088Driver::write_param_u8(uint16_t index, uint8_t value)
+bool GIM81088Driver::poll(int timeout_ms)
 {
-	uint8_t data[8] = {
-		uint8_t(index & 0xFF),
-		uint8_t((index >> 8) & 0xFF),
-		0x00,
-		value,
-		0x00,
-		0x00,
-		0x00,
-		0x00
-	};
-	uint32_t id = build_can_id(GIM81088_WRITE_PARAMS);
-	return send_frame(id, data);
+  struct can_frame f{};
+  if (!recv_frame(f, timeout_ms)) return false;
+  return parse_frame(f);
 }
 
-bool GIM81088Driver::write_param_float(uint16_t index, float value)
+uint16_t GIM81088Driver::build_can_id11(uint16_t cmd_id) const
 {
-	uint8_t data[8] = {
-		uint8_t(index & 0xFF),
-		uint8_t((index >> 8) & 0xFF),
-		0x00,
-		0x00,
-		0x00,
-		0x00,
-		0x00,
-		0x00
-	};
-	std::memcpy(&data[4], &value, sizeof(float));
-	uint32_t id = build_can_id(GIM81088_WRITE_PARAMS);
-	return send_frame(id, data);
+  return (uint16_t)GIM81088_MAKE_CAN_ID(node_id_, cmd_id) & 0x7FF;
 }
 
-bool GIM81088Driver::read_param(uint16_t index)
+void GIM81088Driver::pack_u32_le(uint8_t out[4], uint32_t v)
 {
-	uint8_t data[8] = {
-		uint8_t(index & 0xFF),
-		uint8_t((index >> 8) & 0xFF),
-		0x00,
-		0x00,
-		0x00,
-		0x00,
-		0x00,
-		0x00
-	};
-	uint32_t id = build_can_id(GIM81088_READ_PARAMS);
-	return send_frame(id, data);
+  out[0] = (uint8_t)(v & 0xFF);
+  out[1] = (uint8_t)((v >> 8) & 0xFF);
+  out[2] = (uint8_t)((v >> 16) & 0xFF);
+  out[3] = (uint8_t)((v >> 24) & 0xFF);
 }
 
-// ===== 基本操作 =====
-
-bool GIM81088Driver::enable_motor()
+void GIM81088Driver::pack_i16_le(uint8_t out[2], int16_t v)
 {
-	uint8_t data[8] = {0};
-	uint32_t id = build_can_id(GIM81088_MOTOR_ENABLE);
-	std::cout << "[Enable] transmitted\n";
-	return send_frame(id, data);
+  uint16_t uv = (uint16_t)v;
+  out[0] = (uint8_t)(uv & 0xFF);
+  out[1] = (uint8_t)((uv >> 8) & 0xFF);
 }
 
-bool GIM81088Driver::disable_motor()
+void GIM81088Driver::pack_f32_le(uint8_t out[4], float v)
 {
-	uint8_t data[8] = {0};
-	uint32_t id = build_can_id(GIM81088_MOTOR_DISABLE);
-	std::cout << "[Disable] transmitted\n";
-	return send_frame(id, data);
+  static_assert(sizeof(float) == 4, "float must be 32-bit");
+  std::memcpy(out, &v, 4);
 }
 
-bool GIM81088Driver::set_mech_zero()
+uint16_t GIM81088Driver::clamp_u16(int v)
 {
-	uint8_t data[8] = {0};
-	data[0] = 1; // 現在位置をゼロとするフラグ
-	uint32_t id = build_can_id(GIM81088_ZERO_SET);
-	std::cout << "[Set mechanical zero] transmitted\n";
-	return send_frame(id, data);
+  if (v < 0) return 0;
+  if (v > 0xFFFF) return 0xFFFF;
+  return (uint16_t)v;
 }
 
-bool GIM81088Driver::change_can_id(uint8_t new_id)
+uint16_t GIM81088Driver::float_to_uN(float x, float x_min, float x_max, int bits)
 {
-	uint8_t data[8] = {0};
-	
-	// Bit16-23 に new_id を載せる例（Cybergear と同様のやり方）
-	uint32_t id = 0;
-	id |= ((uint32_t)GIM81088_MOTOR_ID_CHANGE & 0x1F) << 24;
-	id |= ((uint32_t)new_id & 0xFF) << 16;
-	id |= (uint32_t)(motor_id_ & 0xFF);
-	
-	std::cout << "[Change CAN ID " << int(motor_id_) << " -> " << int(new_id) << "] transmitted\n";
-	bool ok = send_frame(id, data);
-	if (ok) {
-		motor_id_ = new_id;
-	}
-	return ok;
+  if (x > x_max) x = x_max;
+  if (x < x_min) x = x_min;
+  const float span = x_max - x_min;
+  const float norm = (x - x_min) / span;
+  const int maxv = (1 << bits) - 1;
+  const int v = (int)(norm * (float)maxv + 0.5f);
+  return (uint16_t)clamp_cxx11(v, 0, maxv);
 }
 
-// run_mode 設定
-//	0: MIT/運動制御
-//	1: 位置
-//	2: 速度
-//	3: 電流
-bool GIM81088Driver::set_run_mode(uint8_t mode)
+bool GIM81088Driver::setAxisNodeId(uint8_t new_node_id)
 {
-	std::cout << "[run_mode=" << int(mode) << "] transmitted\n";
-	return write_param_u8(GIM81088_RUN_MODE, mode);
+  uint8_t d[8]{}; // zero
+  pack_u32_le(&d[0], (uint32_t)new_node_id);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_AXIS_NODE_ID), d);
 }
 
-// ===== 高レベル API =====
-
-// 位置モード: run_mode=1 → enable → limit_speed[rad/s] → pos_ref[rad]
-bool GIM81088Driver::commandPosition(float pos_rad, float limit_speed_rad)
+bool GIM81088Driver::setAxisState(uint32_t requested_state)
 {
-	if (!set_run_mode(GIM81088_POSSITION_MODE))	return false;
-	if (!enable_motor())						return false;
-	if (!write_param_float(GIM81088_SET_LIMIT_SPEED, limit_speed_rad))	return false;
-	return write_param_float(GIM81088_SET_POS_REF, pos_rad);
+  uint8_t d[8]{};
+  pack_u32_le(&d[0], requested_state);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_AXIS_STATE), d);
 }
 
-// 速度モード: run_mode=2 → enable → limit_current[A] → spd_ref[rad/s]
-bool GIM81088Driver::commandVelocity(float vel_rad_s, float limit_current_A)
+bool GIM81088Driver::setControllerMode(uint32_t control_mode, uint32_t input_mode)
 {
-	if (!set_run_mode(GIM81088_SPEED_MODE))	return false;
-	if (!enable_motor())					return false;
-	if (!write_param_float(GIM81088_SET_LIMIT_CURRENT, limit_current_A))	return false;
-	return write_param_float(GIM81088_SPD_REF, vel_rad_s);
+  uint8_t d[8]{};
+  pack_u32_le(&d[0], control_mode);
+  pack_u32_le(&d[4], input_mode);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_CONTROLLER_MODE), d);
 }
 
-// 電流モード: run_mode=3 → enable → iq_ref[A]
-bool GIM81088Driver::commandCurrent(float iq_A)
+bool GIM81088Driver::setInputPos(float input_pos_rev, float vel_ff_rev_s, float torque_ff_Nm)
 {
-	if (!set_run_mode(GIM81088_CURRENT_MODE))	return false;
-	if (!enable_motor())						return false;
-	return write_param_float(GIM81088_IQ_REF, iq_A);
+  uint8_t d[8]{};
+
+  // Input_Pos float32 rev
+  pack_f32_le(&d[0], input_pos_rev);
+
+  // Vel_FF int16 in 0.001 rev/s
+  const int16_t vel_ff_i16 = (int16_t)clamp_cxx11((int)std::lround(vel_ff_rev_s * 1000.0f), -32768, 32767);
+  pack_i16_le(&d[4], vel_ff_i16);
+
+  // Torque_FF int16 in 0.001 Nm
+  const int16_t tq_ff_i16 = (int16_t)clamp_cxx11((int)std::lround(torque_ff_Nm * 1000.0f), -32768, 32767);
+  pack_i16_le(&d[6], tq_ff_i16);
+
+  return send_frame(build_can_id11(GIM81088_CMD_SET_INPUT_POS), d);
 }
 
-// MIT制御モード: run_mode=0 → enable → 通信タイプ1フレーム
-bool GIM81088Driver::commandMIT(float pos_rad, float vel_rad_s, float kp, float kd, float torque_Nm)
+bool GIM81088Driver::setInputVel(float input_vel_rev_s, float torque_ff_Nm)
 {
-	// run_mode=0 を MIT/運控とみなす
-	if (!set_run_mode(0))		return false;
-	if (!enable_motor())		return false;
-	
-	uint8_t data[8];
-	
-	int p_int  = float_to_uint(pos_rad,		P_MIN, P_MAX, 16);
-	int v_int  = float_to_uint(vel_rad_s,	V_MIN, V_MAX, 16);
-	int kp_int = float_to_uint(kp,			KP_MIN, KP_MAX, 16);
-	int kd_int = float_to_uint(kd,			KD_MIN, KD_MAX, 16);
-	int t_int  = float_to_uint(torque_Nm,	T_MIN, T_MAX, 16);
-	
-	data[0] = uint8_t((p_int >> 8)	& 0xFF);
-	data[1] = uint8_t( p_int		& 0xFF);
-	data[2] = uint8_t((v_int >> 8)	& 0xFF);
-	data[3] = uint8_t( v_int		& 0xFF);
-	data[4] = uint8_t((kp_int >> 8)	& 0xFF);
-	data[5] = uint8_t( kp_int		& 0xFF);
-	data[6] = uint8_t((kd_int >> 8)	& 0xFF);
-	data[7] = uint8_t( kd_int		& 0xFF);
-	
-	// torque は ID の data 部に載せる実装もあるが、
-	// ここでは master_id_ の代わりに t_int を載せるなど、
-	// 実機仕様に合わせて必要なら build_can_id を拡張する。
-	uint32_t id = build_can_id(GIM81088_CTRL_MODE);
-	
-	std::cout	<< "[MIT] p=" << pos_rad
-				<< " v=" << vel_rad_s
-				<< " kp=" << kp
-				<< " kd=" << kd
-				<< " t=" << torque_Nm << "\n";
-				
-	return send_frame(id, data);
+  uint8_t d[8]{};
+  pack_f32_le(&d[0], input_vel_rev_s);
+  pack_f32_le(&d[4], torque_ff_Nm);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_INPUT_VEL), d);
+}
+
+bool GIM81088Driver::setInputTorque(float input_torque_Nm)
+{
+  uint8_t d[8]{};
+  pack_f32_le(&d[0], input_torque_Nm);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_INPUT_TORQUE), d);
+}
+
+bool GIM81088Driver::setLimits(float vel_limit_rev_s, float current_limit_A)
+{
+  uint8_t d[8]{};
+  pack_f32_le(&d[0], vel_limit_rev_s);
+  pack_f32_le(&d[4], current_limit_A);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_LIMITS), d);
+}
+
+bool GIM81088Driver::setTrajVelLimit(float traj_vel_limit_rev_s)
+{
+  uint8_t d[8]{};
+  pack_f32_le(&d[0], traj_vel_limit_rev_s);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_TRAJ_VEL_LIMIT), d);
+}
+
+bool GIM81088Driver::setTrajAccelLimits(float traj_accel_rev_s2, float traj_decel_rev_s2)
+{
+  uint8_t d[8]{};
+  pack_f32_le(&d[0], traj_accel_rev_s2);
+  pack_f32_le(&d[4], traj_decel_rev_s2);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_TRAJ_ACCEL_LIMITS), d);
+}
+
+bool GIM81088Driver::setTrajInertia(float traj_inertia)
+{
+  uint8_t d[8]{};
+  pack_f32_le(&d[0], traj_inertia);
+  return send_frame(build_can_id11(GIM81088_CMD_SET_TRAJ_INERTIA), d);
+}
+
+bool GIM81088Driver::clearErrors()
+{
+  uint8_t d[8]{};
+  return send_frame(build_can_id11(GIM81088_CMD_CLEAR_ERRORS), d);
+}
+
+bool GIM81088Driver::reboot()
+{
+  uint8_t d[8]{};
+  return send_frame(build_can_id11(GIM81088_CMD_REBOOT), d);
+}
+
+bool GIM81088Driver::saveConfiguration()
+{
+  uint8_t d[8]{};
+  return send_frame(build_can_id11(GIM81088_CMD_SAVE_CONFIGURATION), d);
+}
+
+bool GIM81088Driver::disableCan()
+{
+  uint8_t d[8]{};
+  return send_frame(build_can_id11(GIM81088_CMD_DISABLE_CAN), d);
+}
+
+bool GIM81088Driver::mitControl(float pos_rad, float vel_rad_s, float kp, float kd, float torque_Nm)
+{
+  // Pack as described in the manual:
+  // BYTE0-1: pos (16)
+  // BYTE2: vel (8 high bits)
+  // BYTE3: vel (low 4 bits in [7-4]) | kp (high 4 bits in [3-0])
+  // BYTE4: kp (low 8 bits)
+  // BYTE5: kd (8 high bits)
+  // BYTE6: kd (low 4 bits in [7-4]) | torque (high 4 bits in [3-0])
+  // BYTE7: torque (low 8 bits)
+
+  const uint16_t p_int  = float_to_uN(pos_rad,    MIT_POS_MIN, MIT_POS_MAX, 16);
+  const uint16_t v_int  = float_to_uN(vel_rad_s,  MIT_VEL_MIN, MIT_VEL_MAX, 12);
+  const uint16_t kp_int = float_to_uN(kp,         MIT_KP_MIN,  MIT_KP_MAX,  12);
+  const uint16_t kd_int = float_to_uN(kd,         MIT_KD_MIN,  MIT_KD_MAX,  12);
+  const uint16_t t_int  = float_to_uN(torque_Nm,  MIT_T_MIN,   MIT_T_MAX,   12);
+
+  uint8_t d[8]{};
+  d[0] = (uint8_t)((p_int >> 8) & 0xFF);
+  d[1] = (uint8_t)( p_int       & 0xFF);
+
+  d[2] = (uint8_t)((v_int >> 4) & 0xFF);
+  d[3] = (uint8_t)(((v_int & 0x0F) << 4) | ((kp_int >> 8) & 0x0F));
+  d[4] = (uint8_t)( kp_int & 0xFF);
+
+  d[5] = (uint8_t)((kd_int >> 4) & 0xFF);
+  d[6] = (uint8_t)(((kd_int & 0x0F) << 4) | ((t_int >> 8) & 0x0F));
+  d[7] = (uint8_t)( t_int & 0xFF);
+
+  return send_frame(build_can_id11(GIM81088_CMD_MIT_CONTROL), d);
+}
+
+//========================
+// Parsing
+//========================
+
+static inline uint16_t get_sff_id(const struct can_frame& f) { return (uint16_t)(f.can_id & CAN_SFF_MASK); }
+static inline uint16_t extract_cmd_id(uint16_t can_id11) { return (uint16_t)(can_id11 & 0x1F); }
+static inline uint8_t  extract_node_id(uint16_t can_id11) { return (uint8_t)((can_id11 >> 5) & 0x3F); }
+
+bool GIM81088Driver::parse_frame(const struct can_frame& f)
+{
+  const uint16_t id11 = get_sff_id(f);
+  const uint8_t  nid  = extract_node_id(id11);
+  const uint16_t cmd  = extract_cmd_id(id11);
+
+  // Most messages are node-specific.
+  // Accept MIT feedback where node_id is also in data[0] and can_id11 may still be node-specific.
+  if (nid != node_id_ && cmd != GIM81088_CMD_MIT_CONTROL) {
+    return false;
+  }
+
+  if (parse_heartbeat(cmd, f)) return true;
+  if (parse_encoder_estimates(cmd, f)) return true;
+  if (parse_iq(cmd, f)) return true;
+  if (parse_bus(cmd, f)) return true;
+  if (parse_mit_feedback(cmd, f)) return true;
+
+  return false;
+}
+
+bool GIM81088Driver::parse_heartbeat(uint16_t cmd_id, const struct can_frame& f)
+{
+  if (cmd_id != GIM81088_CMD_HEARTBEAT) return false;
+
+  GIM81088Heartbeat hb{};
+  // firmware >=0.5.12 format:
+  // [0..3] Axis_Error (u32)
+  // [4]    Axis_State (u8)
+  // [5]    Flags (u8)
+  // [6]    Reserved
+  // [7]    Life
+  std::memcpy(&hb.axis_error, &f.data[0], 4);
+  hb.axis_state = f.data[4];
+  hb.flags      = f.data[5];
+  hb.life       = f.data[7];
+  hb_ = hb;
+  hb_valid_ = true;
+  return true;
+}
+
+bool GIM81088Driver::parse_encoder_estimates(uint16_t cmd_id, const struct can_frame& f)
+{
+  if (cmd_id != GIM81088_CMD_GET_ENCODER_ESTIMATES) return false;
+
+  GIM81088EncoderEstimates e{};
+  std::memcpy(&e.pos_estimate_rev,   &f.data[0], 4);
+  std::memcpy(&e.vel_estimate_rev_s, &f.data[4], 4);
+  enc_ = e;
+  return true;
+}
+
+bool GIM81088Driver::parse_iq(uint16_t cmd_id, const struct can_frame& f)
+{
+  if (cmd_id != GIM81088_CMD_GET_IQ) return false;
+
+  GIM81088Iq iq{};
+  std::memcpy(&iq.iq_setpoint_A, &f.data[0], 4);
+  std::memcpy(&iq.iq_measured_A, &f.data[4], 4);
+  iq_ = iq;
+  iq_valid_ = true;
+  return true;
+}
+
+bool GIM81088Driver::parse_bus(uint16_t cmd_id, const struct can_frame& f)
+{
+  if (cmd_id != GIM81088_CMD_GET_BUS_VOLTAGE_CURRENT) return false;
+
+  GIM81088Bus b{};
+  std::memcpy(&b.bus_voltage_V, &f.data[0], 4);
+  std::memcpy(&b.bus_current_A, &f.data[4], 4);
+  bus_ = b;
+  return true;
+}
+
+bool GIM81088Driver::parse_mit_feedback(uint16_t cmd_id, const struct can_frame& f)
+{
+  if (cmd_id != GIM81088_CMD_MIT_CONTROL) return false;
+
+  // motor->host MIT feedback frame described in manual:
+  // BYTE0: node id
+  // BYTE1-2: position (16)
+  // BYTE3: vel high 8
+  // BYTE4: vel low4 [7-4], torque high4 [3-0]
+  // BYTE5: torque low8
+  const uint8_t node = f.data[0];
+
+  uint16_t pos_int = ((uint16_t)f.data[1] << 8) | (uint16_t)f.data[2];
+  uint16_t vel_int = ((uint16_t)f.data[3] << 4) | ((uint16_t)(f.data[4] >> 4) & 0x0F);
+  uint16_t t_int   = ((uint16_t)(f.data[4] & 0x0F) << 8) | (uint16_t)f.data[5];
+
+  // Conversion per manual:
+  // pos_double = pos_int * 25 / 65535 - 12.5
+  // vel_double = vel_int * 130 / 4095 - 65
+  // t_double   = t_int   * 100 / 4095 - 50
+  GIM81088MitFeedback m{};
+  m.node_id   = node;
+  m.pos_rad   = (float)pos_int * 25.0f / 65535.0f - 12.5f;
+  m.vel_rad_s = (float)vel_int * 130.0f / 4095.0f - 65.0f;
+  m.torque_Nm = (float)t_int   * 100.0f / 4095.0f - 50.0f;
+
+  mit_fb_ = m;
+  return true;
 }
