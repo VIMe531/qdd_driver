@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -61,7 +62,7 @@ class GIM81088Driver
 public:
   // can_iface: "can0" etc.
   // node_id  : target motor CAN node id
-  explicit GIM81088Driver(std::string can_iface = "can0", uint8_t node_id = GIM81088_DEFAULT_NODE_ID);
+  GIM81088Driver(std::string can_iface, std::vector<uint8_t> motor_id);
   ~GIM81088Driver();
 
   GIM81088Driver(const GIM81088Driver&) = delete;
@@ -70,120 +71,65 @@ public:
   int  init_can(const char* ifname = nullptr);
   void close_can();
   bool is_open() const { return sock_ >= 0; }
-
-  void set_node_id(uint8_t node_id) { node_id_ = node_id; }
-  uint8_t node_id() const { return node_id_; }
-
-  // Low-level send (11-bit std CAN id)
-  bool send_frame(uint16_t can_id11, const uint8_t data[8]);
-
-  // Receive one frame with timeout. Returns true if a frame was read.
+  bool send_frame(uint16_t can_id, const uint8_t data[8]);
   bool recv_frame(struct can_frame& out_frame, int timeout_ms = 100);
+  bool poll(uint8_t node_id, int timeout_ms = 0);
 
-  // Poll one frame and update cached status/telemetry.
-  // Returns true if a frame was consumed and parsed (known cmd_id).
-  bool poll(int timeout_ms = 0);
+  bool get_last_heartbeat(GIM81088Heartbeat& out) const;
+  bool get_last_encoder_estimates(GIM81088EncoderEstimates& out) const;
+  bool get_last_iq(GIM81088Iq& out) const;
+  bool get_last_bus(GIM81088Bus& out) const;
+  bool get_last_mit_feedback(GIM81088MitFeedback& out) const;
 
-  // Cached latest data (updated by poll()).
-// Returns true if cached data exists.
-bool get_last_heartbeat(GIM81088Heartbeat& out) const;
-bool get_last_encoder_estimates(GIM81088EncoderEstimates& out) const;
-bool get_last_iq(GIM81088Iq& out) const;
-bool get_last_bus(GIM81088Bus& out) const;
-bool get_last_mit_feedback(GIM81088MitFeedback& out) const;
-  //========================
-  // CAN-Simple commands
-  //========================
-
-  // CMD 0x006: Set_Axis_Node_ID (uint32 Axis_Node_ID)
-  bool setAxisNodeId(uint8_t new_node_id);
-
-  // CMD 0x007: Set_Axis_State (uint32 Axis_Requested_State)
-  bool setAxisState(uint32_t requested_state);
-
-  // CMD 0x00B: Set_Controller_Mode (uint32 Control_Mode, uint32 Input_Mode)
-  bool setControllerMode(uint32_t control_mode, uint32_t input_mode);
-
-  // CMD 0x00C: Set_Input_Pos (float32 Input_Pos[rev], int16 Vel_FF[0.001rev/s], int16 Torque_FF[0.001Nm])
-  bool setInputPos(float input_pos_rev, float vel_ff_rev_s = 0.0f, float torque_ff_Nm = 0.0f);
-
-  // CMD 0x00D: Set_Input_Vel (float32 Input_Vel[rev/s], float32 Torque_FF[Nm])
-  bool setInputVel(float input_vel_rev_s, float torque_ff_Nm = 0.0f);
-
-  // CMD 0x00E: Set_Input_Torque (float32 Input_Torque[Nm])
-  bool setInputTorque(float input_torque_Nm);
-
-  // CMD 0x00F: Set_Limits (float32 Velocity_Limit[rev/s], float32 Current_Limit[A])
-  bool setLimits(float vel_limit_rev_s, float current_limit_A);
-
-  // CMD 0x011: Set_Traj_Vel_Limit (float32 Traj_Vel_Limit[rev/s])
-  bool setTrajVelLimit(float traj_vel_limit_rev_s);
-
-  // CMD 0x012: Set_Traj_Accel_Limits (float32 accel[rev/s^2], float32 decel[rev/s^2])
-  bool setTrajAccelLimits(float traj_accel_rev_s2, float traj_decel_rev_s2);
-
-  // CMD 0x013: Set_Traj_Inertia (float32 inertia[Nm/(rev/s^2)])
-  bool setTrajInertia(float traj_inertia);
-
-  // CMD 0x018: Clear_Errors (no payload)
-  bool clearErrors();
-
-  // CMD 0x016: Reboot (no payload per rev1.4)
-  bool reboot();
-
-  // CMD 0x01F: Save_Configuration (no payload)
-  bool saveConfiguration();
-
-  // CMD 0x01E: Disable_Can (no payload) - disables CAN interface on the drive (use with caution)
-  bool disableCan();
-
-  // CMD 0x009/0x014/0x017 etc are "motor->host" messages.
-  // In CAN-Simple, you typically request them via SDO, but some firmwares stream them.
-  // This driver parses them when received.
-
-  //========================
-  // MIT Control (CMD 0x008)
-  //========================
-  // Per manual, CAN MIT uses output-shaft side units:
-  //  pos [rad] in [-12.5, 12.5]
-  //  vel [rad/s] in [-65, 65]
-  //  kp  [0..500]
-  //  kd  [0..5]
-  //  torque [Nm] in [-50, 50]
-  bool mitControl(float pos_rad, float vel_rad_s, float kp, float kd, float torque_Nm);
+  bool setAxisNodeId(uint8_t node_id, uint8_t new_id);
+  bool setAxisState(uint8_t node_id, uint32_t requested_state);
+  bool setControllerMode(uint8_t node_id, uint32_t control_mode, uint32_t input_mode);
+  bool setInputPos(uint8_t node_id, float input_pos_rad, float vel_ff_rad_s, float torque_ff_Nm);
+  bool setInputVel(uint8_t node_id, float input_vel_rad_s, float torque_ff_Nm);
+  bool setInputTorque(uint8_t node_id, float input_torque_Nm);
+  bool setLimits(uint8_t node_id, float vel_limit_rad_s, float current_limit_A);
+  bool setTrajVelLimit(uint8_t node_id, float traj_vel_limit_rad_s);
+  bool setTrajAccelLimits(uint8_t node_id, float traj_accel_rad_s2, float traj_decel_rad_s2);
+  bool setTrajInertia(uint8_t node_id, float traj_inertia);
+  bool clearErrors(uint8_t node_id);
+  bool reboot(uint8_t node_id);
+  bool saveConfiguration(uint8_t node_id);
+  bool disableCan(uint8_t node_id);
+  bool mitControl(uint8_t node_id, float pos_rad, float vel_rad_s, float kp, float kd, float torque_Nm);
+  bool requestEncoderEstimates(uint8_t node_id);
 
 private:
   std::string can_iface_;
   int sock_ = -1;
-  uint8_t node_id_ = GIM81088_DEFAULT_NODE_ID;
+  std::vector<uint8_t> motor_id;
 
   // cached parsed states
-bool hb_valid_ = false;
-bool enc_valid_ = false;
-bool iq_valid_ = false;
-bool bus_valid_ = false;
-bool mit_fb_valid_ = false;
+  bool hb_valid_ = false;
+  bool enc_valid_ = false;
+  bool iq_valid_ = false;
+  bool bus_valid_ = false;
+  bool mit_fb_valid_ = false;
 
-GIM81088Heartbeat        hb_{};
-GIM81088EncoderEstimates enc_{};
-GIM81088Iq               iq_{};
-GIM81088Bus              bus_{};
-GIM81088MitFeedback      mit_fb_{};
+  GIM81088Heartbeat        hb_{};
+  GIM81088EncoderEstimates enc_{};
+  GIM81088Iq               iq_{};
+  GIM81088Bus              bus_{};
+  GIM81088MitFeedback      mit_fb_{};
 
-  uint16_t build_can_id11(uint16_t cmd_id) const;
+  uint16_t build_can_id(uint8_t node_id, uint16_t cmd_id) const;
   static void pack_u32_le(uint8_t out[4], uint32_t v);
   static void pack_i16_le(uint8_t out[2], int16_t v);
   static void pack_f32_le(uint8_t out[4], float v);
 
   static uint16_t clamp_u16(int v);
-  static uint16_t float_to_uN(float x, float x_min, float x_max, int bits);
+  static uint16_t float_to_uint(float x, float x_min, float x_max, int bits);
 
-  bool parse_frame(const struct can_frame& f);
-  bool parse_heartbeat(uint16_t cmd_id, const struct can_frame& f);
-  bool parse_encoder_estimates(uint16_t cmd_id, const struct can_frame& f);
-  bool parse_iq(uint16_t cmd_id, const struct can_frame& f);
-  bool parse_bus(uint16_t cmd_id, const struct can_frame& f);
-  bool parse_mit_feedback(uint16_t cmd_id, const struct can_frame& f);
+  bool parse_frame(uint8_t node_id, const struct can_frame& frame);
+  bool parse_heartbeat(uint16_t cmd_id, const struct can_frame& frame);
+  bool parse_encoder_estimates(uint16_t cmd_id, const struct can_frame& frame);
+  bool parse_iq(uint16_t cmd_id, const struct can_frame& frame);
+  bool parse_bus(uint16_t cmd_id, const struct can_frame& frame);
+  bool parse_mit_feedback(uint16_t cmd_id, const struct can_frame& frame, uint8_t expected_node_id);
 };
 
 #endif // GIM810888_DRIVER_H

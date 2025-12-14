@@ -8,8 +8,10 @@
 //==================================================
 
 #include <cstdint>
+#include <cmath>
 
 #define GIM81088_MAKE_CAN_ID(node_id, cmd_id)  ( (uint16_t)(((uint16_t)(node_id) << 5) | ((uint16_t)(cmd_id) & 0x1F)) )
+static constexpr float RAD_TO_REV = 1.0f / (2.0f * M_PI);
 
 // ---- cmd_id list ----
 #define GIM81088_CMD_HEARTBEAT                 0x001
