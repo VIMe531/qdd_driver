@@ -21,5 +21,5 @@ make -f GIM81088_test.mk clean
 make -f Cybergear_test.mk
 
 // clear
-make -f Cybergear.mk clean
+make -f Cybergear_test.mk clean
 ```
