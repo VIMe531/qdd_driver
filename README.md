@@ -15,7 +15,7 @@ make -f GIM81088_test.mk clean
 ```
 
 ## Cybergear
-"Cybergear"ディレクトリ内の"Cybergear_Driver.h"をインクルードして使用する．"test"ディレクトリ内にサンプルコード（Cybergear）有．C++11でのビルドを想定．以下のようにしてビルドする．
+"Cybergear"ディレクトリ内の"Cybergear_Driver.h"をインクルードして使用する．"test"ディレクトリ内にサンプルコード（Cybergear_test.cpp）有．C++11でのビルドを想定．以下のようにしてビルドする．
 
 ```
 make -f Cybergear_test.mk
